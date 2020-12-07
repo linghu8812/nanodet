@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..module.conv import ConvModule, DepthwiseConvModule
 from ..module.init_weights import normal_init
@@ -56,6 +57,9 @@ class NanoDetHead(GFLHead):
                                                 4 * (self.reg_max + 1),
                                                 1,
                                                 padding=0) for _ in self.anchor_strides])
+        self.linear = nn.Linear(8, 1)
+        self.linear.weight.data = torch.linspace(0, self.reg_max, self.reg_max + 1).reshape(1, -1)
+        self.linear.bias.data.fill_(0)
 
     def _buid_not_shared_head(self):
         cls_convs = nn.ModuleList()
@@ -100,13 +104,20 @@ class NanoDetHead(GFLHead):
         print('Finish initialize Lite GFL Head.')
 
     def forward(self, feats):
-        return multi_apply(self.forward_single,
-                           feats,
-                           self.cls_convs,
-                           self.reg_convs,
-                           self.gfl_cls,
-                           self.gfl_reg,
-                           )
+        output = multi_apply(self.forward_single,
+                             feats,
+                             self.cls_convs,
+                             self.reg_convs,
+                             self.gfl_cls,
+                             self.gfl_reg,
+                             )
+        if torch.onnx.is_in_onnx_export():
+            assert len(output) == 2 and len(output[0]) == len(output[1])
+            output_list = []
+            for score_out, box_out in zip(output[0], output[1]):
+                output_list.append(torch.cat((box_out, score_out), dim=2))
+            output = torch.cat((output_list), dim=1)
+        return output
 
     def forward_single(self, x, cls_convs, reg_convs, gfl_cls, gfl_reg):
         cls_feat = x
@@ -125,6 +136,8 @@ class NanoDetHead(GFLHead):
         if torch.onnx.is_in_onnx_export():
             cls_score = torch.sigmoid(cls_score).reshape(1, self.num_classes, -1).permute(0, 2, 1)
             bbox_pred = bbox_pred.reshape(1, (self.reg_max+1)*4, -1).permute(0, 2, 1)
+            bbox_pred = F.softmax(bbox_pred.reshape(1, -1, self.reg_max + 1), dim=2)
+            bbox_pred = self.linear(bbox_pred).reshape(1, -1, 4)
         return cls_score, bbox_pred
 
 
