@@ -1,10 +1,10 @@
+#include "nanodet_mnn.hpp"
+#include <iostream>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-#include <iostream>
-#include <net.h>
-#include "nanodet.h"
-#include <benchmark.h>
+
+#define __SAVE_RESULT__ // if defined save drawed results to ../results, else show it in windows
 
 struct object_rect {
     int x;
@@ -71,7 +71,7 @@ int resize_uniform(cv::Mat& src, cv::Mat& dst, cv::Size dst_size, object_rect& e
     else {
         printf("error\n");
     }
-    //cv::imshow("dst", dst);
+    //cv::imwrite("dst", dst);
     //cv::waitKey(0);
     return 0;
 }
@@ -161,7 +161,7 @@ const int color_list[80][3] =
     {127 ,127 ,  0},
 };
 
-void draw_bboxes(const cv::Mat& bgr, const std::vector<BoxInfo>& bboxes, object_rect effect_roi)
+void draw_bboxes(const cv::Mat& bgr, const std::vector<BoxInfo>& bboxes, object_rect effect_roi, std::string save_path="None")
 {
     static const char* class_names[] = { "person", "bicycle", "car", "motorcycle", "airplane", "bus",
                                         "train", "truck", "boat", "traffic light", "fire hydrant",
@@ -218,7 +218,15 @@ void draw_bboxes(const cv::Mat& bgr, const std::vector<BoxInfo>& bboxes, object_
             cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255));
     }
 
-    cv::imshow("image", image);
+    if (save_path == "None")
+    {
+        cv::imshow("image", image);
+    }
+    else
+    {
+        cv::imwrite(save_path, image);
+        std::cout << save_path << std::endl;
+    }
 }
 
 
@@ -226,7 +234,7 @@ int image_demo(NanoDet &detector, const char* imagepath)
 {
     // const char* imagepath = "D:/Dataset/coco/val2017/*.jpg";
 
-    std::vector<std::string> filenames;
+    std::vector<cv::String> filenames;
     cv::glob(imagepath, filenames, false);
 
     for (auto img_name : filenames)
@@ -234,15 +242,22 @@ int image_demo(NanoDet &detector, const char* imagepath)
         cv::Mat image = cv::imread(img_name);
         if (image.empty())
         {
-            fprintf(stderr, "cv::imread %s failed\n", img_name);
+            fprintf(stderr, "cv::imread %s failed\n", img_name.c_str());
             return -1;
         }
         object_rect effect_roi;
         cv::Mat resized_img;
         resize_uniform(image, resized_img, cv::Size(320, 320), effect_roi);
-        auto results = detector.detect(resized_img, 0.4, 0.5);
-        draw_bboxes(image, results, effect_roi);
-        cv::waitKey(0);
+        std::vector<BoxInfo> results;
+        detector.detect(resized_img, results);
+        
+        #ifdef __SAVE_RESULT__
+            std::string save_path = img_name.operator std::string();
+            draw_bboxes(image, results, effect_roi, save_path.replace(3, 4, "results"));
+        #else
+            draw_bboxes(image, results, effect_roi);
+            cv::waitKey(0);
+        #endif
 
     }
     return 0;
@@ -259,7 +274,8 @@ int webcam_demo(NanoDet& detector, int cam_id)
         object_rect effect_roi;
         cv::Mat resized_img;
         resize_uniform(image, resized_img, cv::Size(320, 320), effect_roi);
-        auto results = detector.detect(resized_img, 0.4, 0.5);
+        std::vector<BoxInfo> results;
+        detector.detect(resized_img, results);
         draw_bboxes(image, results, effect_roi);
         cv::waitKey(1);
     }
@@ -277,7 +293,8 @@ int video_demo(NanoDet& detector, const char* path)
         object_rect effect_roi;
         cv::Mat resized_img;
         resize_uniform(image, resized_img, cv::Size(320, 320), effect_roi);
-        auto results = detector.detect(resized_img, 0.4, 0.5);
+        std::vector<BoxInfo> results;
+        detector.detect(resized_img, results);
         draw_bboxes(image, results, effect_roi);
         cv::waitKey(1);
     }
@@ -292,23 +309,16 @@ int benchmark(NanoDet& detector)
     double time_min = DBL_MAX;
     double time_max = -DBL_MAX;
     double time_avg = 0;
-    ncnn::Mat input = ncnn::Mat(320, 320, 3);
-    input.fill(0.01f);
+    cv::Mat image(320, 320, CV_8UC3, cv::Scalar(1, 1, 1));
     for (int i = 0; i < warm_up + loop_num; i++)
     {
-        double start = ncnn::get_current_time();
-        ncnn::Extractor ex = detector.Net->create_extractor();
-        ex.input("input.1", input);
-        for (const auto& head_info : detector.heads_info)
-        {
-            ncnn::Mat dis_pred;
-            ncnn::Mat cls_pred;
-            ex.extract(head_info.dis_layer.c_str(), dis_pred);
-            ex.extract(head_info.cls_layer.c_str(), cls_pred); 
-        }
-        double end = ncnn::get_current_time();
+        auto start = std::chrono::steady_clock::now();
+        std::vector<BoxInfo> results;
+        detector.detect(image, results);
+        auto end = std::chrono::steady_clock::now();
 
-        double time = end - start;
+        std::chrono::duration<double> elapsed = end - start;
+        double time = elapsed.count();
         if (i >= warm_up) 
         {
             time_min = (std::min)(time_min, time);
@@ -329,7 +339,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "usage: %s [mode] [path]. \n For webcam mode=0, path is cam id; \n For image demo, mode=1, path=xxx/xxx/*.jpg; \n For video, mode=2; \n For benchmark, mode=3 path=0.\n", argv[0]);
         return -1;
     }
-    NanoDet detector = NanoDet("./nanodet_m.param", "./nanodet_m.bin", true);
+    // NanoDet detector = NanoDet("../model/nanodet-160.mnn", 160, 160, 4, 0.4, 0.3);
+    NanoDet detector = NanoDet("../model/nanodet-320.mnn", 320, 320, 4, 0.45, 0.3);
     int mode = atoi(argv[1]);
     switch (mode)
     {

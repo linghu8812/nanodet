@@ -6,7 +6,7 @@
 #ifndef NANODET_H
 #define NANODET_H
 
-#include "ncnn/net.h"
+#include "net.h"
 #include "YoloV5.h"
 
 typedef struct HeadInfo
@@ -14,7 +14,7 @@ typedef struct HeadInfo
     std::string cls_layer;
     std::string dis_layer;
     int stride;
-};
+} HeadInfo;
 
 
 class NanoDet{
